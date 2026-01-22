@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blockchain Status - {{ node_id }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/status.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>⛓️ Blockchain Status</h1>
+        <p class="subtitle">Node: {{ node_id }}</p>
+        
+        <div class="stats">
+            <div class="stat-card">
+                <h3>Total Blocks</h3>
+                <div class="value">{{ total_blocks }}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Last Block Index</h3>
+                <div class="value">{{ last_index }}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Last Block Hash</h3>
+                <div class="value hash-value">{{ last_hash[:16] }}...{{ last_hash[-8:] if last_hash != 'None' else '' }}</div>
+            </div>
+        </div>
+        
+        <div class="blocks-section">
+            <h2>Blockchain</h2>
+            {% if blocks %}
+                {% for block in blocks %}
+                <div class="block">
+                    <div class="block-header">
+                        <span class="block-index">Block #{{ block.index }}</span>
+                        <span class="block-timestamp">{{ block.formatted_timestamp }}</span>
+                    </div>
+                    <div class="block-details">
+                        <div class="detail-row">
+                            <span class="detail-label">Block Hash:</span>
+                            <span class="detail-value hash">{{ block.block_hash }}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Previous Hash:</span>
+                            <span class="detail-value hash">{{ block.prev_block_hash }}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Event:</span>
+                            <span class="detail-value">{{ block.event }}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Created By:</span>
+                            <span class="detail-value">{{ block.node_id }}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Nodes with Block:</span>
+                            <span class="detail-value">
+                                {% for node in block.nodes_with_block %}
+                                <span class="node-badge">{{ node }}</span>
+                                {% endfor %}
+                            </span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Content Hash:</span>
+                            <span class="detail-value hash">{{ block.content_hash }}</span>
+                        </div>
+                        {% if block.inode %}
+                        <div class="detail-row">
+                            <span class="detail-label">Inode:</span>
+                            <span class="detail-value">{{ block.inode }}</span>
+                        </div>
+                        {% endif %}
+                        {% if block.size_bytes is not none %}
+                        <div class="detail-row">
+                            <span class="detail-label">Size:</span>
+                            <span class="detail-value">{{ block.size_bytes }} bytes</span>
+                        </div>
+                        {% endif %}
+                        {% if block.path %}
+                        <div class="detail-row">
+                            <span class="detail-label">Path:</span>
+                            <span class="detail-value">{{ block.path }}</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="no-blocks">
+                    <p>📦 No blocks in the chain yet</p>
+                    <p style="font-size: 0.9em; margin-top: 10px;">Blocks will appear here as events are processed</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+    
+    <button class="refresh-btn" onclick="location.reload()">🔄 Refresh</button>
+</body>
+</html>

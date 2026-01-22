@@ -1,0 +1,14 @@
+redis-data*/
+test/
+docker/*.py
+docker/*.txt
+.env
+env/
+docker/static/
+docker/templates/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+data/

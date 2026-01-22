@@ -1,0 +1,130 @@
+services:
+  # ------------------- Node 1 -------------------
+  redis1:
+    image: redis:7
+    container_name: redis1
+    volumes:
+      - ./redis-data1:/data
+    networks:
+      blockchain_test:
+        ipv4_address: 172.16.22.12
+
+  blockchain1:
+    image: blockchain:latest
+    container_name: blockchain1
+    depends_on:
+      - redis1
+    environment:
+      - NODE_ID=blockchain1
+      - NODE_IP=172.16.22.2
+      - REDIS_HOST=redis1
+      - REDIS_PORT=6379
+      - CLUSTER_IPS=172.16.22.2,172.16.22.3,172.16.22.4
+    ports:
+      - "5001:5000"
+      - "7001:7000"
+    networks:
+      blockchain_test:
+        ipv4_address: 172.16.22.2
+
+  watchdog1:
+    image: watchdog:latest
+    container_name: watchdog1
+    depends_on:
+      - blockchain1
+    volumes:
+      - ./test:/images
+    environment:
+      - BLOCKCHAIN_API=http://blockchain1:5000/event
+    networks:
+      blockchain_test:
+        ipv4_address: 172.16.22.22
+
+  # ------------------- Node 2 -------------------
+  redis2:
+    image: redis:7
+    container_name: redis2
+    volumes:
+      - ./redis-data2:/data
+    networks:
+      blockchain_test:
+        ipv4_address: 172.16.22.13
+
+  blockchain2:
+    image: blockchain:latest
+    container_name: blockchain2
+    depends_on:
+      - redis2
+    environment:
+      - NODE_ID=blockchain2
+      - NODE_IP=172.16.22.3
+      - REDIS_HOST=redis2
+      - REDIS_PORT=6379
+      - CLUSTER_IPS=172.16.22.2,172.16.22.3,172.16.22.4
+    ports:
+      - "5002:5000"
+      - "7002:7000"
+    networks:
+      blockchain_test:
+        ipv4_address: 172.16.22.3
+
+  watchdog2:
+    image: watchdog:latest
+    container_name: watchdog2
+    depends_on:
+      - blockchain2
+    volumes:
+      - ./test:/images
+    environment:
+      - BLOCKCHAIN_API=http://blockchain2:5000/event
+    networks:
+      blockchain_test:
+        ipv4_address: 172.16.22.23
+
+  # ------------------- Node 3 -------------------
+  redis3:
+    image: redis:7
+    container_name: redis3
+    volumes:
+      - ./redis-data3:/data
+    networks:
+      blockchain_test:
+        ipv4_address: 172.16.22.14
+
+  blockchain3:
+    image: blockchain:latest
+    container_name: blockchain3
+    depends_on:
+      - redis3
+    environment:
+      - NODE_ID=blockchain3
+      - NODE_IP=172.16.22.4
+      - REDIS_HOST=redis3
+      - REDIS_PORT=6379
+      - CLUSTER_IPS=172.16.22.2,172.16.22.3,172.16.22.4
+    ports:
+      - "5003:5000"
+      - "7003:7000"
+    networks:
+      blockchain_test:
+        ipv4_address: 172.16.22.4
+
+  watchdog3:
+    image: watchdog:latest
+    container_name: watchdog3
+    depends_on:
+      - blockchain3
+    volumes:
+      - ./test:/images
+    environment:
+      - BLOCKCHAIN_API=http://blockchain3:5000/event
+    networks:
+      blockchain_test:
+        ipv4_address: 172.16.22.24
+
+networks:
+  blockchain_test:
+    driver: bridge
+    ipam:
+      config:
+       - subnet: 172.16.22.0/24
