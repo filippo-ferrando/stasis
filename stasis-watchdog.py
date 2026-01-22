@@ -18,9 +18,9 @@ Environment Variables:
 Usage:
     python watchdog-images.py
 """
+
 import os
 import time
-import json
 import hashlib
 import requests
 from watchdog.observers import Observer
@@ -34,13 +34,13 @@ CHUNK_SIZE = 4 * 1024 * 1024  # 4MB
 def compute_sha256(path):
     """
     Compute streaming SHA256 hash of a file.
-    
+
     Uses chunked reading to handle large files efficiently
     without loading entire file into memory.
-    
+
     Args:
         path (str): Path to file
-        
+
     Returns:
         str: Hexadecimal SHA256 hash of file contents
     """
@@ -57,15 +57,15 @@ def compute_sha256(path):
 class ImageEventHandler(FileSystemEventHandler):
     """
     Filesystem event handler for .qcow2 image files.
-    
+
     Monitors filesystem changes and sends events to blockchain service.
     Only processes .qcow2 files, ignores directories and other file types.
     """
-    
+
     def dispatch(self, event):
         """
         Override dispatch to filter out directory events.
-        
+
         Args:
             event: Watchdog event object
         """
@@ -93,10 +93,10 @@ class ImageEventHandler(FileSystemEventHandler):
     def process(self, event, event_type, dest_path=None):
         """
         Process a filesystem event and send to blockchain.
-        
+
         Extracts file metadata (inode, size, hash) and sends to blockchain
         service via HTTP POST. Only processes .qcow2 files.
-        
+
         Args:
             event: Watchdog event object
             event_type (str): Type of event (create, modify, delete, move)
