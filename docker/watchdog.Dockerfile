@@ -5,8 +5,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY watchdog-images.py .
+COPY stasis-watchdog.py .
 
 VOLUME ["/images"]
 
-CMD ["python3", "watchdog-images.py"]
+CMD ["python3", "stasis-watchdog.py"]
