@@ -24,36 +24,16 @@ Distributed FS → Watchdog Monitor → Blockchain Nodes (Consensus) → WAL Sto
 
 ## Quick Start
 
-### Prerequisites
+### `docker-compose` deploy
 
-```bash
-pip install flask requests watchdog
-```
+In the `docker` folder you will find a compose file that will create a test environment to try out the blockchain.
+See the blockchain status on `http://localhost:5001/status` (page served by node-1)
 
-### Single Node Setup
-
-```bash
-# Terminal 1: Start blockchain service
-export NODE_ID=node-1
-export NODE_IP=127.0.0.1
-export CLUSTER_IPS=127.0.0.1
-python3 blockchain-service.py
-
-# Terminal 2: Start watchdog
-export BLOCKCHAIN_API=http://127.0.0.1:5000/event
-export WATCH_PATH=./watched-directory
-python3 watchdog-images.py
-```
-
-### 3-Node Cluster Setup
-
-See [API_DOCUMENTATION.md](API_DOCUMENTATION.md#complete-setup-3-node-cluster) for complete multi-node setup.
+Docker image isn't pushed to registry -> manual buiding is required, use the `build.sh` script in the root of this repo to build the images from scratch (also run `run.sh` to launch the compose file)
 
 ## Documentation
 
 - **[API Documentation](API_DOCUMENTATION.md)** - Complete API reference, configuration, and usage guide
-- **[Solution Summary](SOLUTION_SUMMARY.md)** - High-level overview of fixes and improvements
-- **[Issues Analysis](ISSUES_ANALYSIS.md)** - Detailed analysis of 28 identified issues and fixes
 
 ## Components
 
@@ -132,18 +112,6 @@ Quorum-based (majority):
 - Commits if quorum reached
 - Bumps term and retries if failed
 
-## Testing
-
-```bash
-# Run test suite
-python3 test_blockchain.py
-
-# Manual testing
-touch /path/to/watched/file.qcow2
-curl http://localhost:5000/get_blocks
-curl http://localhost:5000/status
-```
-
 ## Performance
 
 - **Block Lookup**: O(1) via hash index
@@ -158,8 +126,6 @@ curl http://localhost:5000/status
 
 **For Production**: Add authentication, use HTTPS, implement cryptographic signatures, add rate limiting.
 
-See [API_DOCUMENTATION.md - Security](API_DOCUMENTATION.md#security-considerations) for details.
-
 ## Troubleshooting
 
 ### Blocks Not Committing
@@ -172,14 +138,9 @@ Compare chains across nodes, check for term bumps, restart nodes to force sync.
 
 ### High Retry Queue
 
-Verify cluster quorum is possible, check all nodes are healthy, restart failed nodes.
+Verify cluster quorum is possible, check all nodes are healthy, restart failed 
 
-See [API_DOCUMENTATION.md - Troubleshooting](API_DOCUMENTATION.md#troubleshooting) for complete guide.
-
-## Contributing
-
-This project was developed to solve multi-node consistency issues in distributed filesystem event tracking. For issues identified and fixes applied, see [ISSUES_ANALYSIS.md](ISSUES_ANALYSIS.md).
-
-## License
-
-See LICENSE file for details.
+## Todo
+ - implement security measures
+ - change hashing function (qcow2 images can be HUGE)
+ - watchdog need rework (creating a file generates 2 event)

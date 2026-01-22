@@ -236,15 +236,6 @@ HTML page displaying:
 | `DATA_DIR` | `./data` | Directory for persistent storage (WAL, term, seen events) |
 | `SEEN_EVENTS_PERSIST_INTERVAL` | `10` | Persist seen events every N blocks |
 
-**Example:**
-```bash
-export NODE_ID=node-1
-export NODE_IP=192.168.1.10
-export CLUSTER_IPS=192.168.1.10,192.168.1.11,192.168.1.12
-export DATA_DIR=/var/lib/blockchain
-export SEEN_EVENTS_PERSIST_INTERVAL=20
-python3 blockchain-service.py
-```
 
 #### Watchdog Service (watchdog-images.py)
 
@@ -253,12 +244,6 @@ python3 blockchain-service.py
 | `BLOCKCHAIN_API` | `http://blockchain:5000/event` | URL of blockchain service |
 | `WATCH_PATH` | `/images` | Directory to monitor for file changes |
 
-**Example:**
-```bash
-export BLOCKCHAIN_API=http://192.168.1.10:5000/event
-export WATCH_PATH=/mnt/distributed-fs
-python3 watchdog-images.py
-```
 
 ---
 
@@ -565,169 +550,6 @@ open http://node:5000/status
 ⚠️ **No TLS** - Inter-node communication is plaintext
 ⚠️ **Weak signatures** - node_key is random, not cryptographic signature
 
-### Recommendations for Production
-
-1. **Add API Authentication**
-   ```python
-   @app.before_request
-   def authenticate():
-       token = request.headers.get('Authorization')
-       if not validate_token(token):
-           abort(401)
-   ```
-
-2. **Use TLS**
-   ```bash
-   # Use HTTPS for all inter-node communication
-   requests.post('https://node:5000/replicate', ...)
-   ```
-
-3. **Implement Real Signatures**
-   ```python
-   import ed25519
-   signature = private_key.sign(block_json)
-   ```
-
-4. **Rate Limiting**
-   ```python
-   from flask_limiter import Limiter
-   limiter = Limiter(app, key_func=get_remote_address)
-   
-   @app.route('/event')
-   @limiter.limit("10/minute")
-   def receive_event():
-       ...
-   ```
-
----
-
-## Troubleshooting
-
-### Problem: Blocks Not Committing
-
-**Symptoms**: Events return "queued", retry queue grows
-
-**Possible Causes:**
-1. Network issues between nodes
-2. Nodes unreachable (check `/health`)
-3. Clock skew (validate timestamps)
-
-**Solutions:**
-```bash
-# Check node health
-curl http://node1:5000/health
-curl http://node2:5000/health
-
-# Check logs for replication failures
-grep "Replication failed" logs
-
-# Verify network connectivity
-ping node2
-telnet node2 5000
-```
-
-### Problem: Chain Divergence
-
-**Symptoms**: Different nodes have different blocks at same index
-
-**Possible Causes:**
-1. Network partition during consensus
-2. Bugs in validation logic
-3. Manual data corruption
-
-**Solutions:**
-```bash
-# Compare chains
-diff <(curl node1:5000/get_blocks) <(curl node2:5000/get_blocks)
-
-# Check for term bumps (indicates failures)
-grep "Bumped term" logs
-
-# Force sync (restart node)
-```
-
-### Problem: High Retry Queue
-
-**Symptoms**: Many events stuck in retry queue
-
-**Possible Causes:**
-1. Persistent consensus failures
-2. Cluster too small (no quorum possible)
-3. All nodes down except one
-
-**Solutions:**
-```bash
-# Check cluster status
-for node in node1 node2 node3; do
-    echo "$node: $(curl -s http://$node:5000/health)"
-done
-
-# Restart failed nodes
-systemctl restart blockchain-service
-
-# Check retry queue size
-curl http://node:5000/status | grep -i retry
-```
-
----
-
-## Examples
-
-### Complete Setup: 3-Node Cluster
-
-**Node 1:**
-```bash
-export NODE_ID=node-1
-export NODE_IP=192.168.1.10
-export CLUSTER_IPS=192.168.1.10,192.168.1.11,192.168.1.12
-export DATA_DIR=/var/lib/blockchain
-python3 blockchain-service.py &
-
-export BLOCKCHAIN_API=http://192.168.1.10:5000/event
-export WATCH_PATH=/mnt/shared-storage
-python3 watchdog-images.py &
-```
-
-**Node 2:**
-```bash
-export NODE_ID=node-2
-export NODE_IP=192.168.1.11
-export CLUSTER_IPS=192.168.1.10,192.168.1.11,192.168.1.12
-export DATA_DIR=/var/lib/blockchain
-python3 blockchain-service.py &
-
-export BLOCKCHAIN_API=http://192.168.1.11:5000/event
-export WATCH_PATH=/mnt/shared-storage
-python3 watchdog-images.py &
-```
-
-**Node 3:**
-```bash
-export NODE_ID=node-3
-export NODE_IP=192.168.1.12
-export CLUSTER_IPS=192.168.1.10,192.168.1.11,192.168.1.12
-export DATA_DIR=/var/lib/blockchain
-python3 blockchain-service.py &
-
-export BLOCKCHAIN_API=http://192.168.1.12:5000/event
-export WATCH_PATH=/mnt/shared-storage
-python3 watchdog-images.py &
-```
-
-### Testing
-
-```bash
-# Create a file to trigger event
-touch /mnt/shared-storage/test.qcow2
-
-# Check all nodes have the block
-curl http://192.168.1.10:5000/get_blocks | jq 'length'
-curl http://192.168.1.11:5000/get_blocks | jq 'length'
-curl http://192.168.1.12:5000/get_blocks | jq 'length'
-
-# Should all return the same count
-```
-
 ---
 
 ## Glossary
@@ -748,6 +570,3 @@ curl http://192.168.1.12:5000/get_blocks | jq 'length'
 ## References
 
 - **Source Code**: `blockchain-service.py`, `watchdog-images.py`
-- **Issue Analysis**: `ISSUES_ANALYSIS.md`
-- **Solution Summary**: `SOLUTION_SUMMARY.md`
-- **Tests**: `test_blockchain.py`
