@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 import os
 import json
+import random
 import time
 import hashlib
 import threading
 import logging
 import requests
 from flask import Flask, request, jsonify, render_template
+from stasis_discovery import UDPDiscovery
 
 # ======================
 # Environment
 # ======================
 NODE_ID = os.environ.get("NODE_ID", "node-1")
 NODE_IP = os.environ.get("NODE_IP", "127.0.0.1")
-CLUSTER_IPS = [
-    ip.strip() for ip in os.environ.get("CLUSTER_IPS", "").split(",") if ip.strip()
-]
 
 DATA_DIR = os.environ.get("DATA_DIR", "./data")
 WAL_PATH = os.path.join(DATA_DIR, "blockchain.wal")
@@ -31,6 +30,227 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # Flask
 # ======================
 app = Flask(__name__)
+
+# ======================
+# UDP Discovery (global)
+# ======================
+discovery = UDPDiscovery(node_id=NODE_ID, node_ip=NODE_IP)
+
+
+# ======================
+# Raft Leader Election
+# ======================
+class RaftRole:
+    FOLLOWER = "follower"
+    CANDIDATE = "candidate"
+    LEADER = "leader"
+
+
+class RaftNode:
+    """
+    Simplified Raft-inspired leader election.
+
+    Roles:
+    - FOLLOWER:  default state; resets timeout on every heartbeat from leader.
+    - CANDIDATE: started election; collecting votes.
+    - LEADER:    won election; sends heartbeats to peers.
+
+    Endpoints expected on peers:
+    - POST /raft/vote       {"term", "candidate_id", "candidate_ip"}
+    - POST /raft/heartbeat  {"term", "leader_ip", "leader_id"}
+    """
+
+    ELECTION_TIMEOUT_MIN = 4.0  # seconds
+    ELECTION_TIMEOUT_MAX = 8.0  # seconds
+    HEARTBEAT_INTERVAL = 1.5  # seconds
+
+    def __init__(self, node_id: str, node_ip: str, disc: UDPDiscovery):
+        self.node_id = node_id
+        self.node_ip = node_ip
+        self.discovery = disc
+        self.logger = logging.getLogger("raft")
+
+        self._lock = threading.Lock()
+        self.role = RaftRole.FOLLOWER
+        self.current_term = 0
+        self.voted_for: dict = {}  # term -> node_id
+        self.leader_ip: str | None = None
+        self._last_heartbeat = time.time()
+        self._election_timeout = self._rand_timeout()
+        self._running = False
+
+    def _rand_timeout(self) -> float:
+        return random.uniform(self.ELECTION_TIMEOUT_MIN, self.ELECTION_TIMEOUT_MAX)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def start(self, initial_term: int = 0):
+        """Start background Raft threads."""
+        with self._lock:
+            self.current_term = initial_term
+        self._running = True
+        threading.Thread(
+            target=self._election_timer_loop, daemon=True, name="raft-election"
+        ).start()
+        threading.Thread(
+            target=self._heartbeat_loop, daemon=True, name="raft-heartbeat"
+        ).start()
+        self.logger.info("Raft started: term=%d", initial_term)
+
+    def stop(self):
+        self._running = False
+
+    def is_leader(self) -> bool:
+        with self._lock:
+            return self.role == RaftRole.LEADER
+
+    def get_leader_ip(self) -> str | None:
+        with self._lock:
+            return self.leader_ip
+
+    def get_term(self) -> int:
+        with self._lock:
+            return self.current_term
+
+    def set_term(self, term: int):
+        """Called by Blockchain to sync Raft term with persisted term."""
+        with self._lock:
+            if term > self.current_term:
+                self.current_term = term
+
+    def get_status(self) -> dict:
+        with self._lock:
+            return {
+                "role": self.role,
+                "term": self.current_term,
+                "leader_ip": self.leader_ip,
+                "node_id": self.node_id,
+                "node_ip": self.node_ip,
+            }
+
+    def receive_heartbeat(self, term: int, leader_ip: str, leader_id: str) -> bool:
+        """Process an incoming leader heartbeat. Returns True if accepted."""
+        with self._lock:
+            if term < self.current_term:
+                return False
+            self.current_term = term
+            self.role = RaftRole.FOLLOWER
+            self.leader_ip = leader_ip
+            self._last_heartbeat = time.time()
+            self._election_timeout = self._rand_timeout()
+            return True
+
+    def receive_vote_request(
+        self, term: int, candidate_id: str, candidate_ip: str
+    ) -> dict:
+        """Process an incoming vote request. Returns vote response dict."""
+        with self._lock:
+            if term < self.current_term:
+                return {"vote_granted": False, "term": self.current_term}
+            if term > self.current_term:
+                self.current_term = term
+                self.role = RaftRole.FOLLOWER
+                self.voted_for = {}
+            if term not in self.voted_for or self.voted_for[term] == candidate_id:
+                self.voted_for[term] = candidate_id
+                self._last_heartbeat = time.time()
+                return {"vote_granted": True, "term": self.current_term}
+            return {"vote_granted": False, "term": self.current_term}
+
+    # ------------------------------------------------------------------
+    # Background loops
+    # ------------------------------------------------------------------
+
+    def _election_timer_loop(self):
+        while self._running:
+            time.sleep(0.5)
+            with self._lock:
+                if self.role == RaftRole.LEADER:
+                    continue
+                elapsed = time.time() - self._last_heartbeat
+                if elapsed < self._election_timeout:
+                    continue
+                self.current_term += 1
+                self.role = RaftRole.CANDIDATE
+                self.voted_for[self.current_term] = self.node_id
+                term = self.current_term
+                self._last_heartbeat = time.time()
+                self._election_timeout = self._rand_timeout()
+
+            self.logger.info("Election timeout — starting election for term %d", term)
+            self._run_election(term)
+
+    def _run_election(self, term: int):
+        peers = self.discovery.get_peers()
+        votes = 1  # self-vote
+        quorum = (len(peers) + 1) // 2 + 1
+
+        for peer_ip in peers:
+            try:
+                r = requests.post(
+                    f"http://{peer_ip}:5000/raft/vote",
+                    json={
+                        "term": term,
+                        "candidate_id": self.node_id,
+                        "candidate_ip": self.node_ip,
+                    },
+                    timeout=2,
+                )
+                if r.status_code == 200:
+                    resp = r.json()
+                    if resp.get("vote_granted") and resp.get("term") == term:
+                        votes += 1
+                    elif resp.get("term", 0) > term:
+                        with self._lock:
+                            self.current_term = resp["term"]
+                            self.role = RaftRole.FOLLOWER
+                            self._last_heartbeat = time.time()
+                        return
+            except Exception as exc:
+                self.logger.debug("Vote request to %s failed: %s", peer_ip, exc)
+
+        with self._lock:
+            if self.role == RaftRole.CANDIDATE and self.current_term == term:
+                if votes >= quorum:
+                    self.role = RaftRole.LEADER
+                    self.leader_ip = self.node_ip
+                    self.logger.info(
+                        "Elected LEADER for term %d (%d/%d votes)",
+                        term,
+                        votes,
+                        len(peers) + 1,
+                    )
+                else:
+                    self.role = RaftRole.FOLLOWER
+                    self._election_timeout = self._rand_timeout()
+                    self._last_heartbeat = time.time()
+                    self.logger.info(
+                        "Election lost for term %d (%d/%d needed)", term, votes, quorum
+                    )
+
+    def _heartbeat_loop(self):
+        while self._running:
+            time.sleep(self.HEARTBEAT_INTERVAL)
+            with self._lock:
+                if self.role != RaftRole.LEADER:
+                    continue
+                term = self.current_term
+
+            for peer_ip in self.discovery.get_peers():
+                try:
+                    requests.post(
+                        f"http://{peer_ip}:5000/raft/heartbeat",
+                        json={
+                            "term": term,
+                            "leader_ip": self.node_ip,
+                            "leader_id": self.node_id,
+                        },
+                        timeout=1,
+                    )
+                except Exception:
+                    pass
 
 
 # ======================
@@ -378,108 +598,23 @@ class Blockchain:
         return block_hash in self.block_hash_index
 
     # ======================
-    # Leader selection
-    # ======================
-    def ping_host(self, ip):
-        """
-        Check if a host is alive and responsive.
-
-        Args:
-            ip (str): IP address to ping
-
-        Returns:
-            bool: True if host is responsive, False otherwise
-        """
-        if ip == NODE_IP:
-            return True
-        try:
-            return (
-                requests.get(f"http://{ip}:5000/health", timeout=2).status_code == 200
-            )
-        except Exception:
-            return False
-
-    def select_leader(self, event):
-        """
-        Custom leader selection algorithm based on event affinity and node health.
-
-        This implements a deterministic but dynamic leader selection:
-        1. Hash the event to determine event affinity
-        2. Check node health status via ping
-        3. Select first healthy node in rotation
-        4. Consider term numbers to prefer higher-term nodes (break ties)
-
-        This approach ensures:
-        - Same event always starts with same candidate (reduces conflicts)
-        - Automatic failover if primary candidate is down
-        - Term-based prioritization for conflict resolution
-
-        Args:
-            event (dict): Event payload containing inode and content_hash
-
-        Returns:
-            str: IP address of selected leader node
-        """
-        # Handle empty cluster
-        if not CLUSTER_IPS:
-            return NODE_IP
-
-        # Create event affinity hash for deterministic starting point
-        key = self._event_key(event)
-        affinity_hash = int(hashlib.sha256(key.encode()).hexdigest(), 16)
-        start_idx = affinity_hash % len(CLUSTER_IPS)
-
-        # Try to get term information from all nodes to prioritize high-term nodes
-        # Store original index to avoid O(n) lookup during sort
-        node_health = []
-        for i in range(len(CLUSTER_IPS)):
-            ip = CLUSTER_IPS[(start_idx + i) % len(CLUSTER_IPS)]
-            original_idx = (start_idx + i) % len(CLUSTER_IPS)
-            try:
-                if ip == NODE_IP:
-                    node_health.append((ip, self.current_term, True, original_idx))
-                else:
-                    r = requests.get(f"http://{ip}:5000/health", timeout=2)
-                    if r.status_code == 200:
-                        term = r.json().get("term", 0)
-                        node_health.append((ip, term, True, original_idx))
-                    else:
-                        node_health.append((ip, 0, False, original_idx))
-            except Exception:
-                node_health.append((ip, 0, False, original_idx))
-
-        # Sort by: 1) health (alive first), 2) term (higher term first), 3) original order
-        node_health.sort(key=lambda x: (-x[2], -x[1], x[3]))
-
-        # Select first healthy node with highest term
-        for ip, term, is_healthy, _ in node_health:
-            if is_healthy:
-                self.logger.debug(
-                    f"Leader selected: {ip} (term={term}, affinity_hash={affinity_hash % 1000})"
-                )
-                return ip
-
-        # Fallback to self if no other node is available
-        self.logger.warning("No healthy cluster nodes found, falling back to self")
-        return NODE_IP
-
-    # ======================
     # Consensus
     # ======================
-    def quorum_size(self):
+    def quorum_size(self, peers: list) -> int:
         """
         Calculate the quorum size needed for consensus.
 
-        Uses majority quorum: (N // 2) + 1 where N is cluster size.
+        Uses majority quorum: (N // 2) + 1 where N is total cluster size.
         This ensures that any two quorums overlap, preventing split decisions.
+
+        Args:
+            peers: List of peer IPs from discovery (excludes self)
 
         Returns:
             int: Number of nodes needed for quorum
         """
-        # Handle empty cluster
-        if not CLUSTER_IPS:
-            return 1
-        return len(CLUSTER_IPS) // 2 + 1
+        total = len(peers) + 1  # peers + self
+        return total // 2 + 1
 
     def commit_block(self, block):
         """
@@ -487,7 +622,7 @@ class Blockchain:
 
         Process:
         1. Validate the block
-        2. Replicate to all cluster nodes
+        2. Replicate to all discovered peers
         3. Count acknowledgments (including self)
         4. If quorum reached, apply block; otherwise bump term
 
@@ -500,11 +635,10 @@ class Blockchain:
         if not self.validate_block(block):
             return False
 
+        peers = discovery.get_peers()
         acks = 1
         failed_nodes = []
-        for ip in CLUSTER_IPS:
-            if ip == NODE_IP:
-                continue
+        for ip in peers:
             try:
                 r = requests.post(f"http://{ip}:5000/replicate", json=block, timeout=3)
                 if r.status_code == 200:
@@ -512,15 +646,22 @@ class Blockchain:
                 else:
                     failed_nodes.append(ip)
                     self.logger.warning(
-                        f"Replication to {ip} failed with status {r.status_code}: {r.text[:100]}"
+                        "Replication to %s failed (%d): %s",
+                        ip,
+                        r.status_code,
+                        r.text[:100],
                     )
-            except Exception as e:
+            except Exception as exc:
                 failed_nodes.append(ip)
-                self.logger.debug(f"Replication failed to {ip}: {e}")
+                self.logger.debug("Replication failed to %s: %s", ip, exc)
 
-        if acks < self.quorum_size():
+        needed = self.quorum_size(peers)
+        if acks < needed:
             self.logger.warning(
-                f"Quorum not reached: {acks}/{self.quorum_size()}, failed nodes: {failed_nodes}"
+                "Quorum not reached: %d/%d, failed nodes: %s",
+                acks,
+                needed,
+                failed_nodes,
             )
             self.bump_term()
             return False
@@ -612,72 +753,163 @@ class Blockchain:
     # ======================
     def sync_blockchain(self):
         """
-        Synchronize blockchain state with other nodes.
+        Synchronize blockchain state with discovered peers.
 
-        This method:
-        1. Queries all cluster nodes for their blockchains
-        2. Identifies missing blocks
-        3. Sorts blocks by index
-        4. Applies blocks sequentially with validation
-        5. Detects and logs gaps in the chain
+        Queries all live peers for blocks this node is missing,
+        applies them in sequential index order with hash-chain validation.
 
-        Called periodically by background sync_loop thread.
+        If this node has no blocks yet (fresh start), triggers a full
+        bootstrap sync from the peer with the longest chain.
+
+        Called periodically by the background sync_loop thread.
         Thread-safe via append_lock.
         """
-        for ip in CLUSTER_IPS:
+        peers = discovery.get_peers()
+        if not peers:
+            return
+
+        # Bootstrap: if chain is empty, do a full sync from the longest peer
+        if self.last_index == 0:
+            self._bootstrap_from_peers(peers)
+            return
+
+        for ip in peers:
             try:
-                r = requests.get(f"http://{ip}:5000/get_blocks", timeout=3)
+                # Only request blocks we are missing (saves bandwidth)
+                r = requests.get(
+                    f"http://{ip}:5000/get_blocks",
+                    params={"since": self.last_index},
+                    timeout=5,
+                )
                 if r.status_code != 200:
                     continue
 
-                remote_blocks = r.json()
+                remote_blocks = [
+                    b for b in r.json() if not self.has_block(b["block_hash"])
+                ]
+                remote_blocks.sort(key=lambda b: b["index"])
 
-                # Build a dict of blocks we don't have
-                missing_blocks = []
-                for block in remote_blocks:
-                    if not self.has_block(block["block_hash"]):
-                        missing_blocks.append(block)
-
-                # Sort by index to apply in order
-                missing_blocks.sort(key=lambda b: b["index"])
-
-                # Try to apply blocks in sequence
                 with self.append_lock:
-                    for block in missing_blocks:
-                        # Only apply blocks that follow our current chain
+                    for block in remote_blocks:
                         if block["index"] == self.last_index + 1:
-                            # Validate hash chain integrity
                             if block["prev_block_hash"] == self.last_hash:
                                 self.apply_block(block)
                                 self.logger.info(
-                                    f"Synced block {block['index']} from {ip}"
+                                    "Synced block %d from %s", block["index"], ip
                                 )
                         elif block["index"] > self.last_index + 1:
-                            # Gap detected, need to sync more blocks
                             self.logger.warning(
-                                f"Gap detected: have {self.last_index}, remote has {block['index']}"
+                                "Gap detected: have %d, remote has %d",
+                                self.last_index,
+                                block["index"],
                             )
                             break
 
-            except Exception as e:
-                self.logger.debug(f"Sync failed from {ip}: {e}")
+            except Exception as exc:
+                self.logger.debug("Sync failed from %s: %s", ip, exc)
+
+    def _bootstrap_from_peers(self, peers: list):
+        """
+        Download the full blockchain from the peer with the longest chain.
+
+        Called once on startup when the local chain is empty.
+        Thread-safe via append_lock.
+        """
+        best_ip = None
+        best_len = 0
+        for ip in peers:
+            try:
+                r = requests.get(f"http://{ip}:5000/health", timeout=2)
+                if r.status_code == 200:
+                    length = r.json().get("chain_length", 0)
+                    if length > best_len:
+                        best_len = length
+                        best_ip = ip
+            except Exception:
+                pass
+
+        if not best_ip or best_len == 0:
+            return
+
+        try:
+            r = requests.get(f"http://{best_ip}:5000/sync_full", timeout=30)
+            if r.status_code != 200:
+                return
+            blocks = r.json()
+            self.logger.info("Bootstrapping %d blocks from %s", len(blocks), best_ip)
+            with self.append_lock:
+                for block in blocks:
+                    if not self.has_block(block["block_hash"]):
+                        if self.validate_block(block):
+                            self.apply_block(block)
+                        else:
+                            self.logger.warning(
+                                "Invalid block %d during bootstrap, aborting",
+                                block["index"],
+                            )
+                            break
+        except Exception as exc:
+            self.logger.warning("Bootstrap from %s failed: %s", best_ip, exc)
 
 
 bc = Blockchain()
+raft = RaftNode(node_id=NODE_ID, node_ip=NODE_IP, disc=discovery)
 
 
 # ======================
-# Routes
+# Routes — Raft
+# ======================
+@app.post("/raft/vote")
+def raft_vote():
+    """
+    Handle a Raft vote request from a candidate.
+
+    POST /raft/vote
+    Body: {"term": int, "candidate_id": str, "candidate_ip": str}
+
+    Returns:
+        200: {"vote_granted": bool, "term": int}
+    """
+    data = request.get_json(force=True)
+    result = raft.receive_vote_request(
+        term=data["term"],
+        candidate_id=data["candidate_id"],
+        candidate_ip=data["candidate_ip"],
+    )
+    return jsonify(result), 200
+
+
+@app.post("/raft/heartbeat")
+def raft_heartbeat():
+    """
+    Receive a heartbeat from the current Raft leader.
+
+    POST /raft/heartbeat
+    Body: {"term": int, "leader_ip": str, "leader_id": str}
+
+    Returns:
+        200: {"accepted": bool}
+    """
+    data = request.get_json(force=True)
+    accepted = raft.receive_heartbeat(
+        term=data["term"],
+        leader_ip=data["leader_ip"],
+        leader_id=data["leader_id"],
+    )
+    return jsonify({"accepted": accepted}), 200
+
+
+# ======================
+# Routes — Blockchain
 # ======================
 @app.post("/event")
 def receive_event():
     """
     Receive a filesystem event from watchdog.
 
-    Workflow:
-    1. Select leader based on event affinity
-    2. If not leader, return leader info (client should retry with leader)
-    3. If leader, propose and commit the event
+    If this node is not the current Raft leader, redirect the client to the
+    leader IP so it can retry there.  If no leader is known yet, accept
+    the event anyway (single-node or early-bootstrap scenario).
 
     POST /event
     Body: {
@@ -685,19 +917,21 @@ def receive_event():
         "path": "/path/to/file.qcow2",
         "inode": 12345,
         "size_bytes": 1024,
-        "content_hash": "sha256...",
+        "content_hash": "blake3...",
         "metadata": {}
     }
 
     Returns:
-        200: {"status": "committed"} - Block added to blockchain
-        200: {"status": "queued"} - Failed consensus, queued for retry
-        200: {"status": "ignored", "leader": "ip"} - Not leader, redirect to leader
+        200: {"status": "committed"} – block added to blockchain
+        200: {"status": "queued"}    – consensus failed, queued for retry
+        200: {"status": "redirect", "leader": "ip"} – not leader, retry there
     """
     payload = request.get_json(force=True)
-    leader = bc.select_leader(payload)
-    if leader != NODE_IP:
-        return jsonify({"status": "ignored", "leader": leader}), 200
+    leader_ip = raft.get_leader_ip()
+
+    # Redirect to leader if one is known and it is not us
+    if leader_ip and leader_ip != NODE_IP:
+        return jsonify({"status": "redirect", "leader": leader_ip}), 200
 
     block = bc.propose_and_commit(payload)
     return jsonify({"status": "committed" if block else "queued"}), 200
@@ -706,22 +940,35 @@ def receive_event():
 @app.post("/replicate")
 def replicate():
     """
-    Replicate a block from another node (consensus protocol).
+    Replicate a block from the leader (consensus protocol).
 
-    Called by leader node to replicate blocks to follower nodes.
-    Thread-safe with proper locking.
+    Validates the block hash before accepting.  On corrupt hash, returns
+    409 so the sender knows this node has detected an integrity violation.
 
     POST /replicate
     Body: {block object}
 
     Returns:
-        200: {"status": "ok"} - Block accepted and applied
-        200: {"status": "exists"} - Block already exists
-        400: {"error": "invalid"} - Block validation failed
+        200: {"status": "ok"}     – block accepted and applied
+        200: {"status": "exists"} – block already present
+        400: {"error": "invalid", "reason": str} – validation failed
+        409: {"error": "corrupt_hash", "block_index": int} – hash mismatch
     """
     block = request.get_json(force=True)
 
-    # Thread-safe check and apply
+    # Quick integrity check before acquiring the lock
+    computed = bc.compute_block_hash(block)
+    if computed != block.get("block_hash"):
+        bc.logger.error(
+            "Corrupt block hash received for index %s (got %s, expected %s)",
+            block.get("index"),
+            block.get("block_hash", "")[:16],
+            computed[:16],
+        )
+        return jsonify(
+            {"error": "corrupt_hash", "block_index": block.get("index")}
+        ), 409
+
     with bc.append_lock:
         if bc.has_block(block["block_hash"]):
             return jsonify({"status": "exists"}), 200
@@ -730,20 +977,35 @@ def replicate():
             bc.apply_block(block)
             return jsonify({"status": "ok"}), 200
 
-    return jsonify({"error": "invalid"}), 400
+    return jsonify({"error": "invalid", "reason": "chain validation failed"}), 400
 
 
 @app.get("/get_blocks")
 def get_blocks():
     """
-    Get all blocks in the blockchain.
+    Return blocks in the blockchain, optionally filtered by index.
 
-    Used for sync operations between nodes.
-
-    GET /get_blocks
+    GET /get_blocks?since=<index>
 
     Returns:
-        200: [array of blocks]
+        200: [array of blocks with index > since]
+    """
+    since = request.args.get("since", 0, type=int)
+    chain = bc.chain
+    if since:
+        chain = [b for b in chain if b["index"] > since]
+    return jsonify(chain)
+
+
+@app.get("/sync_full")
+def sync_full():
+    """
+    Return the complete blockchain for a bootstrapping node.
+
+    GET /sync_full
+
+    Returns:
+        200: [full array of blocks]
     """
     return jsonify(bc.chain)
 
@@ -753,19 +1015,117 @@ def health():
     """
     Health check endpoint.
 
-    Returns node health status and current term.
-    Used by leader selection and monitoring.
+    Returns node health including Raft role, current term, leader, and chain length.
 
     GET /health
 
     Returns:
-        200: {"status": "healthy", "term": 42}
+        200: {"status": "healthy", "term": 42, "role": "leader",
+              "leader_ip": "...", "chain_length": 100}
     """
-    return jsonify({"status": "healthy", "term": bc.current_term})
+    raft_status = raft.get_status()
+    return jsonify(
+        {
+            "status": "healthy",
+            "node_id": NODE_ID,
+            "term": bc.current_term,
+            "role": raft_status["role"],
+            "leader_ip": raft_status["leader_ip"],
+            "chain_length": bc.last_index,
+        }
+    )
+
+
+@app.get("/cluster_status")
+def cluster_status():
+    """
+    Return cluster health summary for the UI.
+
+    Queries each discovered peer's /health endpoint.  Unreachable peers are
+    reported as "not_ready".
+
+    GET /cluster_status
+
+    Returns:
+        200: {
+            "nodes": [{"node_id", "ip", "status", "role", "term", "chain_length"}],
+            "total": int,
+            "healthy": int,
+            "leader_ip": str | null
+        }
+    """
+    nodes = []
+
+    # Self
+    raft_status = raft.get_status()
+    nodes.append(
+        {
+            "node_id": NODE_ID,
+            "ip": NODE_IP,
+            "status": "ready",
+            "role": raft_status["role"],
+            "term": bc.current_term,
+            "chain_length": bc.last_index,
+        }
+    )
+
+    # Peers
+    peer_details = discovery.get_peer_details()
+    for ip, info in peer_details.items():
+        if ip == NODE_IP:
+            continue
+        try:
+            r = requests.get(f"http://{ip}:5000/health", timeout=2)
+            if r.status_code == 200:
+                data = r.json()
+                nodes.append(
+                    {
+                        "node_id": info.get("node_id", ip),
+                        "ip": ip,
+                        "status": "ready",
+                        "role": data.get("role", "unknown"),
+                        "term": data.get("term", 0),
+                        "chain_length": data.get("chain_length", 0),
+                    }
+                )
+            else:
+                nodes.append(
+                    {
+                        "node_id": info.get("node_id", ip),
+                        "ip": ip,
+                        "status": "not_ready",
+                        "role": "unknown",
+                        "term": 0,
+                        "chain_length": 0,
+                    }
+                )
+        except Exception:
+            nodes.append(
+                {
+                    "node_id": info.get("node_id", ip),
+                    "ip": ip,
+                    "status": "not_ready",
+                    "role": "unknown",
+                    "term": 0,
+                    "chain_length": 0,
+                }
+            )
+
+    healthy = sum(1 for n in nodes if n["status"] == "ready")
+    leader_ip = raft.get_leader_ip()
+
+    return jsonify(
+        {
+            "nodes": sorted(nodes, key=lambda n: n["node_id"]),
+            "total": len(nodes),
+            "healthy": healthy,
+            "leader_ip": leader_ip,
+        }
+    )
 
 
 # ======================
-# ✅ FIXED STATUS PAGE
+# Status page
 # ======================
 @app.get("/status")
 def status_page():
@@ -774,21 +1134,19 @@ def status_page():
     def record(block, node):
         h = block["block_hash"]
         if h not in block_map:
-            block_map[h] = {
-                "block": block,
-                "nodes": set(),
-            }
+            block_map[h] = {"block": block, "nodes": set()}
         block_map[h]["nodes"].add(node)
 
-    # Query ALL nodes (including self)
-    for ip in set(CLUSTER_IPS + [NODE_IP]):
+    # Query all peers (including self)
+    all_ips = set(discovery.get_peers() + [NODE_IP])
+    for ip in all_ips:
         try:
             r = requests.get(f"http://{ip}:5000/get_blocks", timeout=3)
             if r.status_code == 200:
                 for block in r.json():
                     record(block, ip)
         except Exception:
-            bc.logger.warning(f"Status: failed to query {ip}")
+            bc.logger.warning("Status: failed to query %s", ip)
 
     blocks = []
     for entry in block_map.values():
@@ -804,7 +1162,6 @@ def status_page():
     return render_template(
         "status.html",
         node_id=NODE_ID,
-        cluster_nodes=CLUSTER_IPS,
         blocks=blocks,
         total_blocks=len(blocks),
         last_index=bc.last_index,
@@ -819,13 +1176,9 @@ def retry_loop():
     while True:
         time.sleep(2)
         with bc.retry_lock:
-            if bc.retry_queue:
-                payload = bc.retry_queue.pop(0)
-            else:
-                payload = None
-
+            payload = bc.retry_queue.pop(0) if bc.retry_queue else None
         if payload:
-            bc.logger.info(f"Retrying event: {payload.get('path')}")
+            bc.logger.info("Retrying event: %s", payload.get("path"))
             bc.propose_and_commit(payload)
 
 
@@ -836,9 +1189,9 @@ def sync_loop():
 
 
 def persist_seen_events_loop():
-    """Periodically persist seen events to disk"""
+    """Periodically flush seen events to disk."""
     while True:
-        time.sleep(30)  # Persist every 30 seconds
+        time.sleep(30)
         bc.persist_seen_events()
 
 
@@ -846,7 +1199,15 @@ def persist_seen_events_loop():
 # Main
 # ======================
 if __name__ == "__main__":
+    # Start UDP peer discovery
+    discovery.start()
+
+    # Start Raft leader election (sync term from persisted blockchain state)
+    raft.start(initial_term=bc.current_term)
+
+    # Background blockchain threads
     threading.Thread(target=retry_loop, daemon=True).start()
     threading.Thread(target=sync_loop, daemon=True).start()
     threading.Thread(target=persist_seen_events_loop, daemon=True).start()
+
     app.run(host="0.0.0.0", port=5000)

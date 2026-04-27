@@ -1,3 +1,4 @@
+
 * {
     margin: 0;
     padding: 0;
@@ -35,6 +36,103 @@ h1 {
     font-size: 1.1em;
 }
 
+/* ========================
+   Cluster Status Section
+   ======================== */
+.cluster-section {
+    background: #f0f2ff;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 30px;
+    border: 1px solid #d0d6f5;
+}
+
+.cluster-section h2 {
+    color: #667eea;
+    margin-bottom: 14px;
+    font-size: 1.4em;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #667eea;
+}
+
+.cluster-summary {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+    font-size: 0.95em;
+    font-weight: 600;
+    color: #444;
+}
+
+.cluster-count  { color: #444; }
+.cluster-leader { color: #764ba2; font-style: italic; }
+.cluster-healthy       { background: #d4f0d4; color: #1a6b1a; padding: 3px 10px; border-radius: 12px; }
+.cluster-healthy.some-down { background: #fde8d8; color: #a03000; }
+
+.cluster-nodes {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 14px;
+}
+
+.cluster-node-card {
+    background: white;
+    border-radius: 8px;
+    padding: 14px 16px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    border-left: 5px solid #ccc;
+    transition: transform 0.15s;
+}
+
+.cluster-node-card:hover { transform: translateY(-2px); }
+.cluster-node-card.node-ready     { border-left-color: #2ecc71; }
+.cluster-node-card.node-not-ready { border-left-color: #e74c3c; opacity: 0.8; }
+
+.cn-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.cn-id {
+    font-weight: bold;
+    color: #333;
+    font-size: 0.95em;
+    word-break: break-all;
+}
+
+.cn-status-badge {
+    font-size: 0.8em;
+    font-weight: 600;
+    white-space: nowrap;
+    margin-left: 8px;
+}
+
+.cn-details {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+}
+
+.cn-detail {
+    font-size: 0.82em;
+    color: #555;
+}
+
+.loading-text {
+    color: #999;
+    font-style: italic;
+    padding: 10px 0;
+}
+
+.error-text { color: #c0392b; }
+
+/* ========================
+   Stats cards
+   ======================== */
 .stats {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -68,6 +166,9 @@ h1 {
     font-size: 0.8em;
 }
 
+/* ========================
+   Blockchain blocks
+   ======================== */
 .blocks-section h2 {
     color: #667eea;
     margin-bottom: 20px;
@@ -196,4 +297,9 @@ h1 {
     .block-timestamp {
         margin-top: 10px;
     }
+    .cluster-summary {
+        flex-direction: column;
+        align-items: flex-start;
+    }
 }
+

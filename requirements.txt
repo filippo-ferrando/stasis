@@ -1,4 +1,4 @@
 watchdog
 requests
-redis
 flask
+blake3

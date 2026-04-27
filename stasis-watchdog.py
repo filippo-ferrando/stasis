@@ -7,51 +7,108 @@ and sends events to the blockchain service for recording.
 
 Features:
 - Monitors filesystem events (create, modify, delete, move)
-- Computes SHA256 hashes of file contents
+- Computes BLAKE3 hashes of file contents
+- Uses sampled fingerprinting for very large files to bound hashing time
 - Filters for .qcow2 files only
 - Sends events to blockchain via HTTP API
 
 Environment Variables:
-    BLOCKCHAIN_API: URL of blockchain service (default: http://blockchain:5000/event)
-    WATCH_PATH: Directory to monitor (default: /images)
+    BLOCKCHAIN_API:          URL of blockchain service (default: http://blockchain:5000/event)
+    WATCH_PATH:              Directory to monitor (default: /images)
+    HASH_FULL_THRESHOLD_MB:  Files smaller than this are fully hashed (default: 512)
+    HASH_SAMPLE_COUNT:       Number of chunks sampled for large files (default: 64)
+    HASH_SAMPLE_SIZE_MB:     Size of each sample chunk in MB (default: 4)
 
 Usage:
-    python watchdog-images.py
+    python stasis-watchdog.py
 """
 
 import os
 import time
-import hashlib
+import blake3
 import requests
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 BLOCKCHAIN_API = os.environ.get("BLOCKCHAIN_API", "http://blockchain:5000/event")
 WATCH_PATH = os.environ.get("WATCH_PATH", "/images")
-CHUNK_SIZE = 4 * 1024 * 1024  # 4MB
+
+# Hashing configuration
+HASH_FULL_THRESHOLD_MB = int(os.environ.get("HASH_FULL_THRESHOLD_MB", "512"))
+HASH_SAMPLE_COUNT = int(os.environ.get("HASH_SAMPLE_COUNT", "64"))
+HASH_SAMPLE_SIZE_MB = int(os.environ.get("HASH_SAMPLE_SIZE_MB", "4"))
+
+_MB = 1024 * 1024
+HASH_FULL_THRESHOLD = HASH_FULL_THRESHOLD_MB * _MB
+HASH_SAMPLE_SIZE = HASH_SAMPLE_SIZE_MB * _MB
 
 
-def compute_sha256(path):
+def compute_blake3_full(path: str) -> str:
     """
-    Compute streaming SHA256 hash of a file.
-
-    Uses chunked reading to handle large files efficiently
-    without loading entire file into memory.
+    Compute BLAKE3 hash of an entire file using streaming reads.
 
     Args:
-        path (str): Path to file
+        path: Path to file
 
     Returns:
-        str: Hexadecimal SHA256 hash of file contents
+        Hex-encoded BLAKE3 digest
     """
-    h = hashlib.sha256()
+    h = blake3.blake3()
     with open(path, "rb") as f:
         while True:
-            chunk = f.read(CHUNK_SIZE)
+            chunk = f.read(HASH_SAMPLE_SIZE)
             if not chunk:
                 break
             h.update(chunk)
     return h.hexdigest()
+
+
+def compute_blake3_sampled(path: str, file_size: int) -> str:
+    """
+    Compute a BLAKE3-based sampled fingerprint for large files.
+
+    Reads HASH_SAMPLE_COUNT evenly-spaced chunks of HASH_SAMPLE_SIZE bytes
+    and includes the file size in the hash to detect truncation.  This bounds
+    hashing time regardless of file size while still detecting most mutations.
+
+    Args:
+        path:      Path to file
+        file_size: Known file size in bytes (from stat)
+
+    Returns:
+        Hex-encoded BLAKE3 digest prefixed with "sampled:"
+    """
+    h = blake3.blake3()
+    h.update(file_size.to_bytes(8, "big"))  # include size in digest
+
+    with open(path, "rb") as f:
+        step = max(file_size // HASH_SAMPLE_COUNT, HASH_SAMPLE_SIZE)
+        for i in range(HASH_SAMPLE_COUNT):
+            offset = i * step
+            if offset >= file_size:
+                break
+            f.seek(offset)
+            chunk = f.read(HASH_SAMPLE_SIZE)
+            if chunk:
+                h.update(chunk)
+
+    return "sampled:" + h.hexdigest()
+
+
+def compute_content_hash(path: str, size_bytes: int) -> str:
+    """
+    Select full or sampled BLAKE3 hashing based on file size.
+
+    Args:
+        path:       Path to file
+        size_bytes: File size in bytes
+
+    Returns:
+        Hex-encoded BLAKE3 digest (optionally prefixed with "sampled:")
+    """
+    if size_bytes >= HASH_FULL_THRESHOLD:
+        return compute_blake3_sampled(path, size_bytes)
+    return compute_blake3_full(path)
 
 
 class ImageEventHandler(FileSystemEventHandler):
@@ -63,13 +120,7 @@ class ImageEventHandler(FileSystemEventHandler):
     """
 
     def dispatch(self, event):
-        """
-        Override dispatch to filter out directory events.
-
-        Args:
-            event: Watchdog event object
-        """
-        # Only handle files, ignore directories
+        """Override dispatch to filter out directory events."""
         if event.is_directory:
             return
         super().dispatch(event)
@@ -94,13 +145,13 @@ class ImageEventHandler(FileSystemEventHandler):
         """
         Process a filesystem event and send to blockchain.
 
-        Extracts file metadata (inode, size, hash) and sends to blockchain
-        service via HTTP POST. Only processes .qcow2 files.
+        Extracts file metadata (inode, size, BLAKE3 hash) and sends to blockchain
+        service via HTTP POST.  Only processes .qcow2 files.
 
         Args:
-            event: Watchdog event object
-            event_type (str): Type of event (create, modify, delete, move)
-            dest_path (str, optional): Destination path for move events
+            event:      Watchdog event object
+            event_type: Type of event (create, modify, delete, move)
+            dest_path:  Destination path for move events
         """
         filepath = event.src_path
         if not filepath.endswith(".qcow2"):
@@ -116,7 +167,7 @@ class ImageEventHandler(FileSystemEventHandler):
                 stat = os.stat(filepath)
                 inode = stat.st_ino
                 size_bytes = stat.st_size
-                content_hash = compute_sha256(filepath)
+                content_hash = compute_content_hash(filepath, size_bytes)
             except FileNotFoundError:
                 # May happen on rapid delete/move
                 return
@@ -140,6 +191,10 @@ class ImageEventHandler(FileSystemEventHandler):
 
 if __name__ == "__main__":
     print(f"[Watchdog] Watching: {WATCH_PATH}")
+    print(
+        f"[Watchdog] Hash threshold: {HASH_FULL_THRESHOLD_MB} MB "
+        f"(sampled={HASH_SAMPLE_COUNT}×{HASH_SAMPLE_SIZE_MB} MB above threshold)"
+    )
     event_handler = ImageEventHandler()
     observer = Observer()
     observer.schedule(event_handler, WATCH_PATH, recursive=True)
@@ -151,3 +206,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
+

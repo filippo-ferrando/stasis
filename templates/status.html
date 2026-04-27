@@ -10,7 +10,20 @@
     <div class="container">
         <h1>⛓️ Blockchain Status</h1>
         <p class="subtitle">Node: {{ node_id }}</p>
-        
+
+        <!-- Cluster Status Section -->
+        <div class="cluster-section">
+            <h2>🖧 Cluster Status</h2>
+            <div id="cluster-summary" class="cluster-summary">
+                <span id="cluster-total" class="cluster-count">— nodes</span>
+                <span id="cluster-healthy" class="cluster-healthy">— healthy</span>
+                <span id="cluster-leader" class="cluster-leader">Leader: —</span>
+            </div>
+            <div id="cluster-nodes" class="cluster-nodes">
+                <p class="loading-text">Loading cluster data…</p>
+            </div>
+        </div>
+
         <div class="stats">
             <div class="stat-card">
                 <h3>Total Blocks</h3>
@@ -25,7 +38,7 @@
                 <div class="value hash-value">{{ last_hash[:16] }}...{{ last_hash[-8:] if last_hash != 'None' else '' }}</div>
             </div>
         </div>
-        
+
         <div class="blocks-section">
             <h2>Blockchain</h2>
             {% if blocks %}
@@ -93,7 +106,58 @@
             {% endif %}
         </div>
     </div>
-    
+
     <button class="refresh-btn" onclick="location.reload()">🔄 Refresh</button>
+
+    <script>
+        function renderCluster(data) {
+            const summary = document.getElementById('cluster-summary');
+            const nodesEl = document.getElementById('cluster-nodes');
+            const totalEl = document.getElementById('cluster-total');
+            const healthyEl = document.getElementById('cluster-healthy');
+            const leaderEl = document.getElementById('cluster-leader');
+
+            totalEl.textContent = data.total + ' node' + (data.total !== 1 ? 's' : '');
+            healthyEl.textContent = data.healthy + ' healthy';
+            healthyEl.className = 'cluster-healthy ' + (data.healthy === data.total ? 'all-healthy' : 'some-down');
+            leaderEl.textContent = 'Leader: ' + (data.leader_ip || 'electing…');
+
+            let html = '';
+            for (const node of data.nodes) {
+                const isLeader = node.ip === data.leader_ip;
+                const statusClass = node.status === 'ready' ? 'node-ready' : 'node-not-ready';
+                const statusLabel = node.status === 'ready' ? '✅ Ready' : '❌ Not Ready';
+                const roleLabel = isLeader ? '👑 Leader' : node.role;
+                html += `
+                    <div class="cluster-node-card ${statusClass}">
+                        <div class="cn-header">
+                            <span class="cn-id">${node.node_id}</span>
+                            <span class="cn-status-badge">${statusLabel}</span>
+                        </div>
+                        <div class="cn-details">
+                            <span class="cn-detail"><b>IP:</b> ${node.ip}</span>
+                            <span class="cn-detail"><b>Role:</b> ${roleLabel}</span>
+                            <span class="cn-detail"><b>Term:</b> ${node.term}</span>
+                            <span class="cn-detail"><b>Blocks:</b> ${node.chain_length}</span>
+                        </div>
+                    </div>`;
+            }
+            nodesEl.innerHTML = html || '<p class="loading-text">No nodes discovered yet.</p>';
+        }
+
+        function fetchClusterStatus() {
+            fetch('/cluster_status')
+                .then(r => r.json())
+                .then(renderCluster)
+                .catch(() => {
+                    document.getElementById('cluster-nodes').innerHTML =
+                        '<p class="loading-text error-text">⚠️ Could not reach /cluster_status</p>';
+                });
+        }
+
+        fetchClusterStatus();
+        setInterval(fetchClusterStatus, 5000);
+    </script>
 </body>
 </html>
+
