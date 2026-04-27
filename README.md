@@ -1,146 +1,49 @@
-# Distributed Blockchain Volume Ledger
+<p align="center">
+ <img src="logo.png" alt="Stasis Logo" width="600"/>
+</p>
 
-A distributed blockchain system for tracking filesystem events across multiple nodes with multi-node consistency, crash recovery, and event deduplication.
+# Stasis: Distributed Blockchain Volume Ledger
 
-## Overview
+Stasis is a distributed blockchain system designed to track filesystem events across multiple nodes, ensuring multi-node consistency, crash recovery, and deduplication.
 
-This system provides an immutable, distributed ledger for recording filesystem changes (create, modify, delete, move) on distributed filesystems. It uses a custom blockchain implementation with quorum consensus to ensure consistency across nodes.
+## Architecture
 
-### Key Features
+The system consists of three main operational components:
 
-- **Multi-Node Consistency**: Quorum-based consensus prevents blockchain divergence
-- **Crash Recovery**: Write-Ahead Log (WAL) with fsync ensures durability
-- **Event Deduplication**: Prevents duplicate processing via persistent seen events
-- **Custom Leader Election**: Affinity-based selection with health checks and term prioritization
-- **Thread-Safe**: Granular locking strategy prevents race conditions
-- **Append-Only WAL**: Efficient storage that scales to millions of blocks
-- **Real-Time Monitoring**: Watch filesystem changes and record immediately
+1. Blockchain API Node (`stasis-api.py`): A Flask-based web service that implements a Raft-inspired consensus algorithm, a Write-Ahead Log (WAL), and maintains the blockchain.
 
-### Architecture
+2. Watchdog (`stasis-watchdog.py`): A filesystem observer that monitors `.qcow2` files for changes (create, modify, delete, move) and submits events to the Blockchain API.
 
-```
-Distributed FS → Watchdog Monitor → Blockchain Nodes (Consensus) → WAL Storage
-```
+3. UDP Discovery (`stasis_discovery.py`): A decentralized peer discovery mechanism using UDP broadcasts to dynamically track cluster members.
 
-## Quick Start
+## Core Mechanisms
 
-### `docker-compose` deploy
+1. Consensus: Nodes participate in a Raft-inspired leader election process. The elected Leader is responsible for receiving events and replicating blocks to Followers.
 
-In the `docker` folder you will find a compose file that will create a test environment to try out the blockchain.
-See the blockchain status on `http://localhost:5001/status` (page served by node-1)
+2. Dynamic Peer Discovery: Nodes do not require hardcoded peer lists. They broadcast UDP beacons (default port `7000`) every `DISCOVERY_INTERVAL` seconds.
 
-Docker image isn't pushed to registry -> manual buiding is required, use the `build.sh` script in the root of this repo to build the images from scratch (also run `run.sh` to launch the compose file)
+3. Write-Ahead Log (WAL): Blocks are persisted locally to a file (`blockchain.wal`) in an append-only fashion before memory structures are updated.
 
-## Documentation
+4. Smart Hashing: Large `.qcow2` files use a sampled **BLAKE3** fingerprinting mechanism. Files exceeding `HASH_FULL_THRESHOLD_MB` are hashed by reading evenly spaced chunks, bounding the hashing time while detecting mutations.
 
-- **[API Documentation](API_DOCUMENTATION.md)** - Complete API reference, configuration, and usage guide
+## Environment Variables
 
-## Components
+### Blockchain Service (stasis-api.py)
 
-### blockchain-service.py
+- `NODE_ID`: Unique node identifier (default: `node-1`)
+- `NODE_IP`: The IP address of the node (default: `127.0.0.1`)
+- `DATA_DIR`: Directory for WAL, term, and seen events (default: `./data`)
+- `SEEN_EVENTS_PERSIST_INTERVAL`: How often to persist deduplication data (default: `10`)
+- `DISCOVERY_PORT`: UDP port for discovery beacons (default: `7000`)
+- `DISCOVERY_INTERVAL`: Seconds between beacons (default: `5`)
+- `PEER_TTL`: Seconds before a silent peer is removed (default: `15`)
+- `DISCOVERY_BROADCAST`: Broadcast address (default: `255.255.255.255`)
+- `API_PORT`: API port advertised in the beacon (default: `5000`)
 
-The core blockchain node service that:
-- Maintains the blockchain of filesystem events
-- Implements quorum consensus for multi-node agreement
-- Provides HTTP API for event submission and replication
-- Manages Write-Ahead Log for crash recovery
-- Performs leader selection and node synchronization
+### Watchdog Service (stasis-watchdog.py)
 
-### watchdog-images.py
-
-Filesystem monitor that:
-- Watches a directory for .qcow2 file changes
-- Computes SHA256 hashes of file contents
-- Sends events to blockchain service via HTTP
-- Handles create, modify, delete, and move events
-
-## Configuration
-
-### Blockchain Service
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NODE_ID` | `node-1` | Unique identifier for this node |
-| `NODE_IP` | `127.0.0.1` | IP address of this node |
-| `CLUSTER_IPS` | `` | Comma-separated list of all cluster node IPs |
-| `DATA_DIR` | `./data` | Directory for persistent storage |
-| `SEEN_EVENTS_PERSIST_INTERVAL` | `10` | Persist seen events every N blocks |
-
-### Watchdog Service
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BLOCKCHAIN_API` | `http://blockchain:5000/event` | URL of blockchain service |
-| `WATCH_PATH` | `/images` | Directory to monitor |
-
-## API Endpoints
-
-- `POST /event` - Submit filesystem event
-- `POST /replicate` - Replicate block (internal consensus)
-- `GET /get_blocks` - Retrieve all blocks
-- `GET /health` - Health check
-- `GET /status` - Web UI for blockchain status
-
-See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for complete API reference.
-
-## How It Works
-
-### Event Flow
-
-1. **Detection**: Watchdog detects file change
-2. **Hash**: Computes SHA256 of file content
-3. **Submit**: Sends event to blockchain service
-4. **Leader Selection**: Service selects leader based on event affinity
-5. **Consensus**: Leader replicates to cluster, waits for quorum
-6. **Commit**: Block written to WAL and applied to chain
-7. **Sync**: Other nodes sync periodically
-
-### Leader Election
-
-Uses custom affinity-based selection:
-- Events with same inode/hash always route to same leader candidate
-- Health checks determine which nodes are available
-- Term numbers break ties (higher term preferred)
-- Automatic failover if leader is down
-
-### Consensus Protocol
-
-Quorum-based (majority):
-- Leader creates block
-- Replicates to all followers
-- Waits for majority acknowledgment
-- Commits if quorum reached
-- Bumps term and retries if failed
-
-## Performance
-
-- **Block Lookup**: O(1) via hash index
-- **WAL Append**: O(1) append-only writes
-- **Chain Size**: Scales to millions of blocks
-- **Cluster Size**: Tested with 3-5 nodes
-- **Event Rate**: Limited by consensus latency (~3s per block)
-
-## Security
-
-⚠️ **Current Implementation**: No authentication, no TLS, weak signatures
-
-**For Production**: Add authentication, use HTTPS, implement cryptographic signatures, add rate limiting.
-
-## Troubleshooting
-
-### Blocks Not Committing
-
-Check node health, verify network connectivity, inspect logs for replication failures.
-
-### Chain Divergence
-
-Compare chains across nodes, check for term bumps, restart nodes to force sync.
-
-### High Retry Queue
-
-Verify cluster quorum is possible, check all nodes are healthy, restart failed 
-
-## Todo
- - implement security measures
- - change hashing function (qcow2 images can be HUGE)
- - watchdog need rework (creating a file generates 2 event)
+- `BLOCKCHAIN_API`: URL of the blockchain service (default: `http://blockchain:5000/event`)
+- `WATCH_PATH`: Directory to monitor for .qcow2 files (default: `/images`)
+- `HASH_FULL_THRESHOLD_MB`: Threshold for full vs. sampled hashing (default: `512`)
+- `HASH_SAMPLE_COUNT`: Number of chunks for sampled hashing (default: `64`)
+- `HASH_SAMPLE_SIZE_MB`: Chunk size in MB (default: `4`)

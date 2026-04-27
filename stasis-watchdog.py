@@ -1,75 +1,63 @@
 #!/usr/bin/env python3
-"""
-Watchdog Filesystem Event Monitor
-
-This module monitors a filesystem directory for changes to .qcow2 files
-and sends events to the blockchain service for recording.
-
-Features:
-- Monitors filesystem events (create, modify, delete, move)
-- Computes SHA256 hashes of file contents
-- Filters for .qcow2 files only
-- Sends events to blockchain via HTTP API
-
-Environment Variables:
-    BLOCKCHAIN_API: URL of blockchain service (default: http://blockchain:5000/event)
-    WATCH_PATH: Directory to monitor (default: /images)
-
-Usage:
-    python watchdog-images.py
-"""
 
 import os
 import time
-import hashlib
+import blake3
 import requests
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 BLOCKCHAIN_API = os.environ.get("BLOCKCHAIN_API", "http://blockchain:5000/event")
 WATCH_PATH = os.environ.get("WATCH_PATH", "/images")
-CHUNK_SIZE = 4 * 1024 * 1024  # 4MB
+
+# Hashing configuration
+HASH_FULL_THRESHOLD_MB = int(os.environ.get("HASH_FULL_THRESHOLD_MB", "512"))
+HASH_SAMPLE_COUNT = int(os.environ.get("HASH_SAMPLE_COUNT", "64"))
+HASH_SAMPLE_SIZE_MB = int(os.environ.get("HASH_SAMPLE_SIZE_MB", "4"))
+
+_MB = 1024 * 1024
+HASH_FULL_THRESHOLD = HASH_FULL_THRESHOLD_MB * _MB
+HASH_SAMPLE_SIZE = HASH_SAMPLE_SIZE_MB * _MB
 
 
-def compute_sha256(path):
-    """
-    Compute streaming SHA256 hash of a file.
-
-    Uses chunked reading to handle large files efficiently
-    without loading entire file into memory.
-
-    Args:
-        path (str): Path to file
-
-    Returns:
-        str: Hexadecimal SHA256 hash of file contents
-    """
-    h = hashlib.sha256()
+def compute_blake3_full(path: str) -> str:
+    h = blake3.blake3()
     with open(path, "rb") as f:
         while True:
-            chunk = f.read(CHUNK_SIZE)
+            chunk = f.read(HASH_SAMPLE_SIZE)
             if not chunk:
                 break
             h.update(chunk)
     return h.hexdigest()
 
 
+def compute_blake3_sampled(path: str, file_size: int) -> str:
+    h = blake3.blake3()
+    h.update(file_size.to_bytes(8, "big"))  # include size in digest
+
+    with open(path, "rb") as f:
+        step = max(file_size // HASH_SAMPLE_COUNT, HASH_SAMPLE_SIZE)
+        for i in range(HASH_SAMPLE_COUNT):
+            offset = i * step
+            if offset >= file_size:
+                break
+            f.seek(offset)
+            chunk = f.read(HASH_SAMPLE_SIZE)
+            if chunk:
+                h.update(chunk)
+
+    return "sampled:" + h.hexdigest()
+
+
+def compute_content_hash(path: str, size_bytes: int) -> str:
+    if size_bytes >= HASH_FULL_THRESHOLD:
+        return compute_blake3_sampled(path, size_bytes)
+    return compute_blake3_full(path)
+
+
 class ImageEventHandler(FileSystemEventHandler):
-    """
-    Filesystem event handler for .qcow2 image files.
-
-    Monitors filesystem changes and sends events to blockchain service.
-    Only processes .qcow2 files, ignores directories and other file types.
-    """
-
     def dispatch(self, event):
-        """
-        Override dispatch to filter out directory events.
-
-        Args:
-            event: Watchdog event object
-        """
-        # Only handle files, ignore directories
+        """Override dispatch to filter out directory events."""
         if event.is_directory:
             return
         super().dispatch(event)
@@ -91,17 +79,6 @@ class ImageEventHandler(FileSystemEventHandler):
         self.process(event, "move", dest_path=event.dest_path)
 
     def process(self, event, event_type, dest_path=None):
-        """
-        Process a filesystem event and send to blockchain.
-
-        Extracts file metadata (inode, size, hash) and sends to blockchain
-        service via HTTP POST. Only processes .qcow2 files.
-
-        Args:
-            event: Watchdog event object
-            event_type (str): Type of event (create, modify, delete, move)
-            dest_path (str, optional): Destination path for move events
-        """
         filepath = event.src_path
         if not filepath.endswith(".qcow2"):
             return
@@ -116,7 +93,7 @@ class ImageEventHandler(FileSystemEventHandler):
                 stat = os.stat(filepath)
                 inode = stat.st_ino
                 size_bytes = stat.st_size
-                content_hash = compute_sha256(filepath)
+                content_hash = compute_content_hash(filepath, size_bytes)
             except FileNotFoundError:
                 # May happen on rapid delete/move
                 return
@@ -140,6 +117,10 @@ class ImageEventHandler(FileSystemEventHandler):
 
 if __name__ == "__main__":
     print(f"[Watchdog] Watching: {WATCH_PATH}")
+    print(
+        f"[Watchdog] Hash threshold: {HASH_FULL_THRESHOLD_MB} MB "
+        f"(sampled={HASH_SAMPLE_COUNT}×{HASH_SAMPLE_SIZE_MB} MB above threshold)"
+    )
     event_handler = ImageEventHandler()
     observer = Observer()
     observer.schedule(event_handler, WATCH_PATH, recursive=True)
