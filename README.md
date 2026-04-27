@@ -1,3 +1,7 @@
+<p align="center">
+ <img src="logo.png" alt="Stasis Logo" width="600"/>
+</p>
+
 # Stasis: Distributed Blockchain Volume Ledger
 
 Stasis is a distributed blockchain system designed to track filesystem events across multiple nodes, ensuring multi-node consistency, crash recovery, and deduplication.

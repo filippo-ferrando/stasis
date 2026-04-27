@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""
-Watchdog Filesystem Event Monitor
-
-This module monitors a filesystem directory for changes to .qcow2 files
-and sends events to the blockchain service for recording.
-
-Features:
-- Monitors filesystem events (create, modify, delete, move)
-- Computes BLAKE3 hashes of file contents
-- Uses sampled fingerprinting for very large files to bound hashing time
-- Filters for .qcow2 files only
-- Sends events to blockchain via HTTP API
-
-Environment Variables:
-    BLOCKCHAIN_API:          URL of blockchain service (default: http://blockchain:5000/event)
-    WATCH_PATH:              Directory to monitor (default: /images)
-    HASH_FULL_THRESHOLD_MB:  Files smaller than this are fully hashed (default: 512)
-    HASH_SAMPLE_COUNT:       Number of chunks sampled for large files (default: 64)
-    HASH_SAMPLE_SIZE_MB:     Size of each sample chunk in MB (default: 4)
-
-Usage:
-    python stasis-watchdog.py
-"""
 
 import os
 import time
@@ -44,15 +21,6 @@ HASH_SAMPLE_SIZE = HASH_SAMPLE_SIZE_MB * _MB
 
 
 def compute_blake3_full(path: str) -> str:
-    """
-    Compute BLAKE3 hash of an entire file using streaming reads.
-
-    Args:
-        path: Path to file
-
-    Returns:
-        Hex-encoded BLAKE3 digest
-    """
     h = blake3.blake3()
     with open(path, "rb") as f:
         while True:
@@ -64,20 +32,6 @@ def compute_blake3_full(path: str) -> str:
 
 
 def compute_blake3_sampled(path: str, file_size: int) -> str:
-    """
-    Compute a BLAKE3-based sampled fingerprint for large files.
-
-    Reads HASH_SAMPLE_COUNT evenly-spaced chunks of HASH_SAMPLE_SIZE bytes
-    and includes the file size in the hash to detect truncation.  This bounds
-    hashing time regardless of file size while still detecting most mutations.
-
-    Args:
-        path:      Path to file
-        file_size: Known file size in bytes (from stat)
-
-    Returns:
-        Hex-encoded BLAKE3 digest prefixed with "sampled:"
-    """
     h = blake3.blake3()
     h.update(file_size.to_bytes(8, "big"))  # include size in digest
 
@@ -96,29 +50,12 @@ def compute_blake3_sampled(path: str, file_size: int) -> str:
 
 
 def compute_content_hash(path: str, size_bytes: int) -> str:
-    """
-    Select full or sampled BLAKE3 hashing based on file size.
-
-    Args:
-        path:       Path to file
-        size_bytes: File size in bytes
-
-    Returns:
-        Hex-encoded BLAKE3 digest (optionally prefixed with "sampled:")
-    """
     if size_bytes >= HASH_FULL_THRESHOLD:
         return compute_blake3_sampled(path, size_bytes)
     return compute_blake3_full(path)
 
 
 class ImageEventHandler(FileSystemEventHandler):
-    """
-    Filesystem event handler for .qcow2 image files.
-
-    Monitors filesystem changes and sends events to blockchain service.
-    Only processes .qcow2 files, ignores directories and other file types.
-    """
-
     def dispatch(self, event):
         """Override dispatch to filter out directory events."""
         if event.is_directory:
@@ -142,17 +79,6 @@ class ImageEventHandler(FileSystemEventHandler):
         self.process(event, "move", dest_path=event.dest_path)
 
     def process(self, event, event_type, dest_path=None):
-        """
-        Process a filesystem event and send to blockchain.
-
-        Extracts file metadata (inode, size, BLAKE3 hash) and sends to blockchain
-        service via HTTP POST.  Only processes .qcow2 files.
-
-        Args:
-            event:      Watchdog event object
-            event_type: Type of event (create, modify, delete, move)
-            dest_path:  Destination path for move events
-        """
         filepath = event.src_path
         if not filepath.endswith(".qcow2"):
             return
@@ -206,4 +132,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
-

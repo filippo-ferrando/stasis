@@ -85,32 +85,32 @@ services:
 
 
 # ------------------- Node 4 -------------------
-  stasis-chain-4:
-    image: stasis-chain:latest
-    container_name: stasis-chain-4
-    environment:
-      - NODE_ID=stasis-chain-4
-      - NODE_IP=172.16.22.5
-      - DISCOVERY_BROADCAST=172.16.22.255
-    ports:
-      - "5004:5000"
-      - "7004:7000"
-    networks:
-      stasis_test:
-        ipv4_address: 172.16.22.5
+#  stasis-chain-4:
+#    image: stasis-chain:latest
+#    container_name: stasis-chain-4
+#    environment:
+#      - NODE_ID=stasis-chain-4
+#      - NODE_IP=172.16.22.5
+#      - DISCOVERY_BROADCAST=172.16.22.255
+#    ports:
+#      - "5004:5000"
+#      - "7004:7000"
+#    networks:
+#      stasis_test:
+#        ipv4_address: 172.16.22.5
 
-  stasis-watchdog4:
-    image: stasis-watchdog:latest
-    container_name: stasis-watchdog4
-    depends_on:
-      - stasis-chain-4
-    volumes:
-      - ./test:/images
-    environment:
-      - BLOCKCHAIN_API=http://stasis-chain-4:5000/event
-    networks:
-      stasis_test:
-        ipv4_address: 172.16.22.25
+#  stasis-watchdog4:
+#    image: stasis-watchdog:latest
+#    container_name: stasis-watchdog4
+#    depends_on:
+#      - stasis-chain-4
+#    volumes:
+#      - ./test:/images
+#    environment:
+#      - BLOCKCHAIN_API=http://stasis-chain-4:5000/event
+#    networks:
+#      stasis_test:
+#        ipv4_address: 172.16.22.25
 
 networks:
   stasis_test:

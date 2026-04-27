@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""
-UDP Peer Discovery for Stasis Blockchain Cluster
-
-Each node broadcasts a presence beacon at regular intervals.
-Beacons heard by all nodes on the same network segment.
-Peers that stop sending beacons are expired after PEER_TTL seconds.
-
-Environment Variables:
-    DISCOVERY_PORT:      UDP port for peer discovery (default: 7000)
-    DISCOVERY_INTERVAL:  Seconds between beacons (default: 5)
-    PEER_TTL:            Seconds before a silent peer is removed (default: 15)
-    DISCOVERY_BROADCAST: Broadcast address (default: 255.255.255.255)
-    API_PORT:            HTTP API port advertised in beacon (default: 5000)
-"""
 
 import json
 import logging
@@ -29,33 +15,16 @@ API_PORT = int(os.environ.get("API_PORT", "5000"))
 
 
 class UDPDiscovery:
-    """
-    UDP broadcast-based peer discovery.
-
-    Starts three background daemon threads:
-    - Broadcaster: sends JSON beacons to BROADCAST_ADDR:DISCOVERY_PORT
-    - Listener:    receives beacons and updates the peer registry
-    - Reaper:      removes peers that have not been heard from within PEER_TTL
-
-    Thread-safe via an internal RLock.
-    """
-
     def __init__(self, node_id: str, node_ip: str):
         self.node_id = node_id
         self.node_ip = node_ip
         self.logger = logging.getLogger("discovery")
 
-        # {ip: {"node_id": str, "node_ip": str, "api_port": int, "last_seen": float}}
         self._peers: dict = {}
         self._lock = threading.RLock()
         self._running = False
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def start(self):
-        """Start broadcaster, listener and reaper threads."""
         self._running = True
         for target, name in (
             (self._broadcast_loop, "udp-broadcaster"),
@@ -65,7 +34,6 @@ class UDPDiscovery:
             threading.Thread(target=target, daemon=True, name=name).start()
 
         self.logger.info(
-            "UDP discovery started: node_id=%s ip=%s port=%d broadcast=%s",
             self.node_id,
             self.node_ip,
             DISCOVERY_PORT,
@@ -73,11 +41,9 @@ class UDPDiscovery:
         )
 
     def stop(self):
-        """Signal all background threads to exit."""
         self._running = False
 
     def get_peers(self) -> list:
-        """Return list of live peer IP addresses (excluding self)."""
         with self._lock:
             now = time.time()
             return [
@@ -87,11 +53,9 @@ class UDPDiscovery:
             ]
 
     def get_peer_details(self) -> dict:
-        """Return ``{ip: info_dict}`` for all live peers including self."""
         with self._lock:
             now = time.time()
             result = {}
-            # Always include self
             result[self.node_ip] = {
                 "node_id": self.node_id,
                 "node_ip": self.node_ip,
@@ -102,10 +66,6 @@ class UDPDiscovery:
                 if (now - info["last_seen"]) < PEER_TTL:
                     result[ip] = info.copy()
             return result
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _make_beacon(self) -> bytes:
         return json.dumps(
@@ -118,7 +78,6 @@ class UDPDiscovery:
         ).encode()
 
     def _broadcast_loop(self):
-        """Broadcast a presence beacon at DISCOVERY_INTERVAL seconds."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -136,7 +95,6 @@ class UDPDiscovery:
             sock.close()
 
     def _listen_loop(self):
-        """Listen for beacons from other nodes."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -155,7 +113,6 @@ class UDPDiscovery:
             sock.close()
 
     def _handle_beacon(self, data: bytes, addr):
-        """Parse and register a received beacon."""
         try:
             beacon = json.loads(data.decode())
         except Exception:
@@ -177,7 +134,6 @@ class UDPDiscovery:
             self.logger.info("New peer discovered: %s @ %s", peer_id, peer_ip)
 
     def _reaper_loop(self):
-        """Remove peers that have not sent a beacon within PEER_TTL seconds."""
         while self._running:
             time.sleep(PEER_TTL)
             now = time.time()
