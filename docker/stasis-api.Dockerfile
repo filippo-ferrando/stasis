@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY stasis-api.py .
+COPY stasis_api.py .
 COPY stasis_discovery.py .
 COPY static ./static
 COPY templates ./templates
@@ -13,4 +13,4 @@ COPY templates ./templates
 EXPOSE 5000
 EXPOSE 7000
 
-CMD ["python3", "stasis-api.py"]
+CMD ["python3", "stasis_api.py"]

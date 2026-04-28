@@ -7,10 +7,10 @@ NC     := \033[0m # No Color
 CC := docker
 
 DOCKER_FOLDER := ./docker
-CHAIN := stasis-chain
-WATCHDOG := stasis-watchdog
+CHAIN := stasis_chain
+WATCHDOG := stasis_watchdog
 CHAIN_DF := stasis-api.Dockerfile
-WATCHDOG_DF := stasis-watchdog.Dockerfile
+WATCHDOG_DF := stasis_watchdog.Dockerfile
 COMPOSE := docker-compose.yml
 
 BUILDER := stasis-builder

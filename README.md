@@ -1,5 +1,5 @@
 <p align="center">
- <img src="logo.png" alt="Stasis Logo" width="600"/>
+ <img src="doc/logo.png" alt="Stasis Logo" width="600"/>
 </p>
 
 # Stasis: Distributed Blockchain Volume Ledger
