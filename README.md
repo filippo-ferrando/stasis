@@ -47,3 +47,8 @@ The system consists of three main operational components:
 - `HASH_FULL_THRESHOLD_MB`: Threshold for full vs. sampled hashing (default: `512`)
 - `HASH_SAMPLE_COUNT`: Number of chunks for sampled hashing (default: `64`)
 - `HASH_SAMPLE_SIZE_MB`: Chunk size in MB (default: `4`)
+
+## API Documentation
+
+- All the API endpoint are documented in the [API Documentation](doc/API_DOCUMENTATION.md) file.
+- Cluster recovery is documented in the [Recovery Documentation](doc/CLUSTER_RECOVERY.md) file.
