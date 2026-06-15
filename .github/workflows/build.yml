@@ -12,7 +12,8 @@ on:
       - v*.*.*
 
 jobs:
-  build-images:
+  build-images-github:
+    if: ${{ contains(github.server_url, 'github.com') }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -58,3 +59,53 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  build-image-forgejo:
+    if: ${{ !contains(github.server_url, 'github.com') }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - name: stasis_api
+            dockerfile: docker/stasis_api.Dockerfile
+          - name: stasis_watchdog
+            dockerfile: docker/stasis_watchdog.Dockerfile
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Forgejo registry
+        run: |
+          echo "${{ secrets.LOCAL_TOKEN }}" | docker login git.rdfilippo.mywire.org \
+            -u "${{ github.actor }}" \
+            --password-stdin
+
+      - name: Set tag
+        id: vars
+        run: |
+          echo "TAG=${{ inputs.tag || github.ref_name }}" >> $GITHUB_OUTPUT
+
+      - name: Build and push ${{ matrix.name }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+
+          push: true
+
+          platforms: linux/amd64,linux/arm64
+
+          tags: |
+            git.rdfilippo.mywire.org/${{ github.repository_owner }}/${{ matrix.name }}:${{ steps.vars.outputs.TAG }}
+            git.rdfilippo.mywire.org/${{ github.repository_owner }}/${{ matrix.name }}:latest
+
+          cache-from: type=registry,ref=git.rdfilippo.mywire.org/cache/${{ matrix.name }}:buildcache
+          cache-to: type=registry,ref=git.rdfilippo.mywire.org/cache/${{ matrix.name }}:buildcache,mode=max
