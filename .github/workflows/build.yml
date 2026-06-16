@@ -22,9 +22,9 @@ jobs:
       matrix:
         include:
           - name: stasis_api
-            dockerfile: docker/stasis_api.Dockerfile
+            dockerfile: docker/stasis-api.Dockerfile
           - name: stasis_watchdog
-            dockerfile: docker/stasis_watchdog.Dockerfile
+            dockerfile: docker/stasis-watchdog.Dockerfile
     name: Build Stasis images
     steps:
       - name: Checkout repo
