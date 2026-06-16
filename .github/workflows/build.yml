@@ -110,6 +110,3 @@ jobs:
           tags: |
             git.rdfilippo.mywire.org/${{ github.repository_owner }}/${{ matrix.name }}:${{ steps.vars.outputs.TAG }}
             git.rdfilippo.mywire.org/${{ github.repository_owner }}/${{ matrix.name }}:latest
-
-          cache-from: type=registry,ref=git.rdfilippo.mywire.org/cache/${{ matrix.name }}:buildcache
-          cache-to: type=registry,ref=git.rdfilippo.mywire.org/cache/${{ matrix.name }}:buildcache,mode=max
